@@ -28,12 +28,12 @@
 //!
 //! These types are mostly useful for their data they hold - they only have a few simple
 //! methods on them for displaying them or converting between them.
-use colored::Colorize;
+
+use owo_colors::OwoColorize;
 
 use crate::cache::{ImplInfoId, ImplScopeId, ModuleCache, TraitInfoId, VariableId};
-use crate::error::location::Location;
-use crate::types::typechecker::find_all_typevars;
-use crate::types::{typeprinter::TypePrinter, Type, TypeVariableId};
+use crate::error::{location::Location, Styling};
+use crate::types::{typechecker::find_all_typevars, typeprinter::TypePrinter, Type, TypeVariableId};
 
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -128,13 +128,17 @@ impl RequiredTrait {
         self.signature.find_all_typevars(cache)
     }
 
-    pub fn display<'a, 'b>(&self, cache: &'a ModuleCache<'b>) -> ConstraintSignaturePrinter<'a, 'b> {
-        self.signature.display(cache)
+    pub fn display<'a, 'b>(
+        &self, cache: &'a ModuleCache<'b>, styling: &'a Styling,
+    ) -> ConstraintSignaturePrinter<'a, 'b> {
+        self.signature.display(cache, styling)
     }
 
     #[allow(dead_code)]
-    pub fn debug<'a, 'b>(&self, cache: &'a ModuleCache<'b>) -> ConstraintSignaturePrinter<'a, 'b> {
-        self.signature.debug(cache)
+    pub fn debug<'a, 'b>(
+        &self, cache: &'a ModuleCache<'b>, styling: &'a Styling,
+    ) -> ConstraintSignaturePrinter<'a, 'b> {
+        self.signature.debug(cache, styling)
     }
 }
 
@@ -147,7 +151,9 @@ impl ConstraintSignature {
         typevars
     }
 
-    pub fn display<'a, 'b>(&self, cache: &'a ModuleCache<'b>) -> ConstraintSignaturePrinter<'a, 'b> {
+    pub fn display<'a, 'b>(
+        &self, cache: &'a ModuleCache<'b>, styling: &'a Styling,
+    ) -> ConstraintSignaturePrinter<'a, 'b> {
         let mut typevar_names = HashMap::new();
         let mut current = 'a';
         let typevars = self.find_all_typevars(cache);
@@ -160,11 +166,13 @@ impl ConstraintSignature {
             }
         }
 
-        ConstraintSignaturePrinter { signature: self.clone(), typevar_names, debug: false, cache }
+        ConstraintSignaturePrinter { signature: self.clone(), typevar_names, debug: false, cache, styling }
     }
 
     #[allow(dead_code)]
-    pub fn debug<'a, 'b>(&self, cache: &'a ModuleCache<'b>) -> ConstraintSignaturePrinter<'a, 'b> {
+    pub fn debug<'a, 'b>(
+        &self, cache: &'a ModuleCache<'b>, styling: &'a Styling,
+    ) -> ConstraintSignaturePrinter<'a, 'b> {
         let mut typevar_names = HashMap::new();
 
         for typ in &self.args {
@@ -177,7 +185,7 @@ impl ConstraintSignature {
             }
         }
 
-        ConstraintSignaturePrinter { signature: self.clone(), typevar_names, debug: true, cache }
+        ConstraintSignaturePrinter { signature: self.clone(), typevar_names, debug: true, cache, styling }
     }
 }
 
@@ -191,13 +199,15 @@ pub struct ConstraintSignaturePrinter<'a, 'b> {
     pub debug: bool,
 
     pub cache: &'a ModuleCache<'b>,
+
+    pub styling: &'a Styling,
 }
 
 impl<'a, 'b> Display for ConstraintSignaturePrinter<'a, 'b> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         let trait_info = &self.cache[self.signature.trait_id];
 
-        write!(f, "{}", trait_info.name.blue())?;
+        write!(f, "{}", trait_info.name.style(self.styling.trait_))?;
         for arg in &self.signature.args {
             let typ = GeneralizedType::MonoType(arg.clone());
             let arg_printer = TypePrinter::new(typ, self.typevar_names.clone(), self.debug, self.cache);
@@ -255,12 +265,16 @@ impl TraitConstraint {
         cache[self.required.callsite.id()].location
     }
 
-    pub fn display<'a, 'c>(&self, cache: &'a ModuleCache<'c>) -> ConstraintSignaturePrinter<'a, 'c> {
-        self.clone().into_required_trait().display(cache)
+    pub fn display<'a, 'c>(
+        &self, cache: &'a ModuleCache<'c>, styling: &'a Styling,
+    ) -> ConstraintSignaturePrinter<'a, 'c> {
+        self.clone().into_required_trait().display(cache, styling)
     }
 
     #[allow(dead_code)]
-    pub fn debug<'a, 'c>(&self, cache: &'a ModuleCache<'c>) -> ConstraintSignaturePrinter<'a, 'c> {
-        self.clone().into_required_trait().debug(cache)
+    pub fn debug<'a, 'c>(
+        &self, cache: &'a ModuleCache<'c>, styling: &'a Styling,
+    ) -> ConstraintSignaturePrinter<'a, 'c> {
+        self.clone().into_required_trait().debug(cache, styling)
     }
 }

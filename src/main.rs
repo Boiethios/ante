@@ -44,7 +44,10 @@ use std::fs::File;
 use std::io::{stdout, BufReader, Read};
 use std::path::Path;
 
-use crate::cli::{Backend, Cli, Completions, EmitTarget};
+use crate::{
+    cli::{Backend, Cli, Completions, EmitTarget},
+    error::Styling,
+};
 
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -52,7 +55,7 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// Called when the "--check --show-types" command-line flags are given.
 /// Iterates through each Definition from the first compiled module (so excluding imports)
 /// and prints the type and required traits for each.
-fn print_definition_types(cache: &ModuleCache) {
+fn print_definition_types(cache: &ModuleCache, styling: &Styling) {
     let resolver = cache.name_resolvers.get_mut(0).unwrap();
     let mut definitions = resolver.exports.definitions.iter().collect::<Vec<_>>();
 
@@ -64,7 +67,7 @@ fn print_definition_types(cache: &ModuleCache) {
 
         if let Some(typ) = &info.typ {
             let (t, traits) =
-                types::typeprinter::show_type_and_traits(typ, &info.required_traits, &info.trait_info, cache);
+                types::typeprinter::show_type_and_traits(typ, &info.required_traits, &info.trait_info, cache, styling);
             println!("{} : {}", name, t);
             if !traits.is_empty() {
                 println!("  given {}", traits.join(", "));
@@ -112,7 +115,8 @@ fn compile(args: Cli) {
     let mut contents = String::new();
     expect!(reader.read_to_string(&mut contents), "Failed to read {} into a string\n", filename.display());
 
-    error::color_output(!args.no_color);
+    let styling = if args.no_color { Styling::no_color() } else { Styling::colored() };
+
     util::timing::time_passes(args.show_time);
 
     // Phase 1: Lexing
@@ -144,10 +148,10 @@ fn compile(args: Cli) {
     types::typechecker::infer_ast(ast, &mut cache);
 
     if args.show_types {
-        print_definition_types(&cache);
+        print_definition_types(&cache, &styling);
     }
 
-    if args.check || error::get_error_count() != 0 {
+    if args.check || error::has_errored() {
         return;
     }
 
@@ -167,8 +171,7 @@ fn compile(args: Cli) {
 
     // Phase 6: Codegen
     let default_backend = if args.opt_level == '0' { Backend::Cranelift } else { Backend::Llvm };
-    let backend =
-        args.backend.unwrap_or(default_backend);
+    let backend = args.backend.unwrap_or(default_backend);
 
     match backend {
         Backend::Cranelift => cranelift_backend::run(filename, hir, &args),

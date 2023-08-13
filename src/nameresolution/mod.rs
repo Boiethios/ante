@@ -40,8 +40,8 @@
 use crate::cache::{DefinitionInfoId, EffectInfoId, ModuleCache, ModuleId};
 use crate::cache::{DefinitionKind, ImplInfoId, TraitInfoId};
 use crate::error::{
-    self,
     location::{Locatable, Location},
+    CompilationError, CompilationNote,
 };
 use crate::lexer::{token::Token, Lexer};
 use crate::nameresolution::scope::{FunctionScopes, Scope};
@@ -53,8 +53,6 @@ use crate::types::{
     TypeInfoId, TypeVariableId, INITIAL_LEVEL, STRING_TYPE,
 };
 use crate::util::{fmap, timing, trustme};
-
-use colored::Colorize;
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
@@ -326,18 +324,25 @@ impl NameResolver {
         self.type_variable_scopes.push(scope::TypeVariableScope::default());
     }
 
-    fn push_existing_type_variable(&mut self, key: &str, id: TypeVariableId, location: Location) -> TypeVariableId {
+    fn push_existing_type_variable(
+        &mut self, key: &str, id: TypeVariableId, location: Location, cache: &mut ModuleCache,
+    ) -> TypeVariableId {
         let top = self.type_variable_scopes.len() - 1;
 
         if self.type_variable_scopes[top].push_existing_type_variable(key.to_owned(), id).is_none() {
-            error!(location, "Type variable '{}' is already in scope", key);
+            cache.push_message(
+                location,
+                CompilationError::todo(&format!("Type variable '{}' is already in scope", key)),
+            );
         }
         id
     }
 
-    fn push_new_type_variable<'c>(&mut self, key: &str, location: Location<'c>, cache: &mut ModuleCache<'c>) -> TypeVariableId {
+    fn push_new_type_variable<'c>(
+        &mut self, key: &str, location: Location<'c>, cache: &mut ModuleCache<'c>,
+    ) -> TypeVariableId {
         let id = cache.next_type_variable_id(self.let_binding_level);
-        self.push_existing_type_variable(key, id, location)
+        self.push_existing_type_variable(key, id, location, cache)
     }
 
     fn pop_scope<'c>(
@@ -396,7 +401,10 @@ impl NameResolver {
             required_definitions.swap_remove(index);
         } else {
             let trait_info = &cache.trait_infos[self.current_trait.unwrap().0];
-            error!(location, "{} is not required by {}", name, trait_info.name);
+            cache.push_message(
+                location,
+                CompilationError::todo(&format!("{} is not required by {}", name, trait_info.name)),
+            );
         }
     }
 
@@ -426,9 +434,12 @@ impl NameResolver {
         if let Some(existing_definition) = self.current_scope().definitions.get(name) {
             // disallow shadowing in global scopes
             if in_global_scope {
-                error!(location, "{} is already in scope", name);
+                cache.push_message(location, CompilationError::todo(&format!("{} is already in scope", name)));
                 let previous_location = cache.definition_infos[existing_definition.0].location;
-                note!(previous_location, "{} previously defined here", name);
+                cache.push_message(
+                    previous_location,
+                    CompilationNote::todo(&format!("{} previously defined here", name)),
+                );
             } else {
                 // allow shadowing in local scopes
                 self.current_scope().check_for_unused_definitions(cache, None);
@@ -462,9 +473,9 @@ impl NameResolver {
         &mut self, name: String, args: Vec<TypeVariableId>, cache: &mut ModuleCache<'c>, location: Location<'c>,
     ) -> TypeInfoId {
         if let Some(existing_definition) = self.current_scope().types.get(&name) {
-            error!(location, "{} is already in scope", name);
+            cache.push_message(location, CompilationError::todo(&format!("{} is already in scope", name)));
             let previous_location = cache.type_infos[existing_definition.0].locate();
-            note!(previous_location, "{} previously defined here", name);
+            cache.push_message(previous_location, CompilationNote::todo(&format!("{} previously defined here", name)));
         }
 
         let id = cache.push_type_info(name.clone(), args, location);
@@ -480,9 +491,9 @@ impl NameResolver {
         node: &'c mut ast::TraitDefinition<'c>, cache: &mut ModuleCache<'c>, location: Location<'c>,
     ) -> TraitInfoId {
         if let Some(existing_definition) = self.current_scope().traits.get(&name) {
-            error!(location, "{} is already in scope", name);
+            cache.push_message(location, CompilationError::todo(&format!("{} is already in scope", name)));
             let previous_location = cache.trait_infos[existing_definition.0].locate();
-            note!(previous_location, "{} previously defined here", name);
+            cache.push_message(previous_location, CompilationNote::todo(&format!("{} previously defined here", name)));
         }
 
         let id = cache.push_trait_definition(name.clone(), args, fundeps, Some(node), location);
@@ -498,9 +509,9 @@ impl NameResolver {
         cache: &mut ModuleCache<'c>, location: Location<'c>,
     ) -> EffectInfoId {
         if let Some(existing_definition) = self.current_scope().effects.get(&name) {
-            error!(location, "{} is already in scope", name);
+            cache.push_message(location, CompilationError::todo(&format!("{} is already in scope", name)));
             let previous_location = cache.effect_infos[existing_definition.0].locate();
-            note!(previous_location, "{} previously defined here", name);
+            cache.push_message(previous_location, CompilationNote::todo(&format!("{} previously defined here", name)));
         }
 
         let id = cache.push_effect_definition(name.clone(), args, node, location);
@@ -544,12 +555,23 @@ impl NameResolver {
         None
     }
 
-    fn validate_type_application<'c>(&self, constructor: &Type, args: &[Type], location: Location<'c>, cache: &mut ModuleCache<'c>) {
+    fn validate_type_application<'c>(
+        &self, constructor: &Type, args: &[Type], location: Location<'c>, cache: &mut ModuleCache<'c>,
+    ) {
         let expected = self.get_expected_type_argument_count(constructor, cache);
         if args.len() != expected && !matches!(constructor, Type::TypeVariable(_)) {
             let plural_s = if expected == 1 { "" } else { "s" };
             let is_are = if args.len() == 1 { "is" } else { "are" };
-            error!(location, "Type {} expects {} argument{}, but {} {} given here", constructor.display(cache), expected, plural_s, args.len(), is_are);
+            error!(
+                location,
+                "Type {} expects {} argument{}, but {} {} given here",
+                constructor.display(cache),
+                expected,
+                plural_s,
+                args.len(),
+                is_are
+            );
+            //should I call value_is_not_a_function?
         }
 
         // Check argument is an integer/float type (issue #146)
@@ -564,7 +586,7 @@ impl NameResolver {
                     if !matches!(first_arg, Type::Primitive(PrimitiveType::FloatTag(_)) | Type::TypeVariable(_)) {
                         error!(location, "Type {} is not a float type", first_arg.display(cache));
                     }
-                }
+                },
                 _ => (),
             }
         }
@@ -590,7 +612,9 @@ impl NameResolver {
     /// Re-insert the given type variables into the current scope.
     /// Currently used for remembering type variables from type and trait definitions that
     /// were created in the declare pass and need to be used later in the define pass.
-    fn add_existing_type_variables_to_scope(&mut self, existing_typevars: &[String], ids: &[TypeVariableId], location: Location) {
+    fn add_existing_type_variables_to_scope(
+        &mut self, existing_typevars: &[String], ids: &[TypeVariableId], location: Location,
+    ) {
         // re-insert the typevars into scope.
         // These names are guarenteed to not collide since we just pushed a new scope.
         assert_eq!(existing_typevars.len(), ids.len());
@@ -612,7 +636,7 @@ impl<'c> NameResolver {
         timing::start_time("Name Resolution (Define)");
         resolver.define(cache);
 
-        if error::get_error_count() != 0 {
+        if has_errored() {
             Err(())
         } else {
             Ok(())
@@ -692,11 +716,8 @@ impl<'c> NameResolver {
             ast::Type::Function(args, ret, is_varargs, is_closure, _) => {
                 let parameters = fmap(args, |arg| self.convert_type(cache, arg));
                 let return_type = Box::new(self.convert_type(cache, ret));
-                let environment = Box::new(if *is_closure {
-                    cache.next_type_variable(self.let_binding_level)
-                } else {
-                    Type::UNIT
-                });
+                let environment =
+                    Box::new(if *is_closure { cache.next_type_variable(self.let_binding_level) } else { Type::UNIT });
                 let effects = Box::new(cache.next_type_variable(self.let_binding_level));
                 let is_varargs = *is_varargs;
                 Type::Function(FunctionType { parameters, return_type, environment, is_varargs, effects })

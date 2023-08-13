@@ -11,7 +11,10 @@
 //! for how an `ast::Match` is converted into a `PatternMatrix` and `PatternMatrix::compile`
 //! for how a PatternMatrix is converted into a `DecisionTree`.
 use crate::cache::{DefinitionInfoId, DefinitionKind, ModuleCache};
-use crate::error::location::{Locatable, Location};
+use crate::error::{
+    location::{Locatable, Location},
+    CompilationError, CompilationWarning,
+};
 use crate::lexer::token::Token;
 use crate::parser::ast::{self, Ast, LiteralKind};
 use crate::types::pattern::Constructor::*;
@@ -31,7 +34,7 @@ pub fn compile<'c>(match_expr: &ast::Match<'c>, cache: &mut ModuleCache<'c>) -> 
     if result.context.reachable_branches.len() != match_expr.branches.len() {
         for (i, (pattern, _branch)) in match_expr.branches.iter().enumerate() {
             if !result.context.reachable_branches.contains(&i) {
-                warning!(pattern.locate(), "Unreachable pattern");
+                cache.push_message(pattern.locate(), CompilationWarning::todo("Unreachable pattern"));
             }
         }
     }
@@ -217,12 +220,12 @@ impl PatternStack {
                     PatternStack(vec![(Variant(tag, fields), variable)])
                 },
                 _ => {
-                    error!(ast.locate(), "Invalid syntax used in pattern");
+                    cache.push_message(ast.locate(), CompilationError::todo("Invalid syntax used in pattern"));
                     PatternStack(vec![])
                 },
             },
             _ => {
-                error!(ast.locate(), "Invalid syntax used in pattern");
+                cache.push_message(ast.locate(), CompilationError::todo("Invalid syntax used in pattern"));
                 PatternStack(vec![])
             },
         }
@@ -618,7 +621,7 @@ impl DecisionTreeResult {
         DecisionTreeResult::new(DecisionTree::Leaf(branch), context)
     }
 
-    fn issue_inexhaustive_errors<'c>(&self, cache: &ModuleCache<'c>, location: Location<'c>) {
+    fn issue_inexhaustive_errors<'c>(&self, cache: &mut ModuleCache<'c>, location: Location<'c>) {
         let mut bindings = BTreeMap::new();
         DecisionTreeResult::issue_inexhaustive_errors_helper(&self.tree, None, &mut bindings, cache, location);
     }
@@ -627,7 +630,7 @@ impl DecisionTreeResult {
     /// When this hits a Fail node, the reconstructed piece of data will be a missing case.
     fn issue_inexhaustive_errors_helper<'c>(
         tree: &DecisionTree, starting_id: Option<DefinitionInfoId>, bindings: &mut DebugMatchBindings,
-        cache: &ModuleCache<'c>, location: Location<'c>,
+        cache: &mut ModuleCache<'c>, location: Location<'c>,
     ) {
         use DecisionTree::*;
         match tree {
@@ -642,7 +645,7 @@ impl DecisionTreeResult {
 
                             for tag in get_missing_cases(&covered_cases, cache) {
                                 bindings.insert(*id, DebugConstructor::new(&Some(tag), cache));
-                                DecisionTreeResult::issue_inexhaustive_error(starting_id, bindings, location);
+                                DecisionTreeResult::issue_inexhaustive_error(cache, starting_id, bindings, location);
                             }
                         },
                         _ => {
@@ -664,12 +667,13 @@ impl DecisionTreeResult {
     }
 
     fn issue_inexhaustive_error(
-        starting_id: Option<DefinitionInfoId>, bindings: &DebugMatchBindings, location: Location,
+        cache: &mut ModuleCache, starting_id: Option<DefinitionInfoId>, bindings: &DebugMatchBindings,
+        location: Location,
     ) {
         let case =
             starting_id.map_or("_".to_string(), |id| DecisionTreeResult::construct_missing_case_string(id, bindings));
 
-        error!(location, "Missing case {}", case);
+        cache.push_message(location, CompilationError::todo(&format!("Missing case {case}")));
     }
 
     /// Construct the string representation of the data defined by the starting DefinitionInfoId
@@ -922,9 +926,13 @@ impl Case {
                 constructor_type.instantiate(vec![], cache).0
             },
             Some(Literal(LiteralKind::Integer(_, Some(kind)))) => Type::int(*kind),
-            Some(Literal(LiteralKind::Integer(_, None))) => Type::polymorphic_int(typechecker::next_type_variable_id(cache)),
+            Some(Literal(LiteralKind::Integer(_, None))) => {
+                Type::polymorphic_int(typechecker::next_type_variable_id(cache))
+            },
             Some(Literal(LiteralKind::Float(_, Some(kind)))) => Type::float(*kind),
-            Some(Literal(LiteralKind::Float(_, None))) => Type::polymorphic_float(typechecker::next_type_variable_id(cache)),
+            Some(Literal(LiteralKind::Float(_, None))) => {
+                Type::polymorphic_float(typechecker::next_type_variable_id(cache))
+            },
             Some(Literal(LiteralKind::String(_))) => Type::UserDefined(STRING_TYPE),
             Some(Literal(LiteralKind::Char(_))) => Type::Primitive(PrimitiveType::CharType),
             Some(Literal(LiteralKind::Bool(_))) => unreachable!(),

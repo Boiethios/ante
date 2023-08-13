@@ -29,7 +29,7 @@
 use crate::cache::{DefinitionInfoId, DefinitionKind, EffectInfoId, ModuleCache, TraitInfoId};
 use crate::cache::{ImplScopeId, VariableId};
 use crate::error::location::{Locatable, Location};
-use crate::error::{get_error_count, ErrorMessage};
+use crate::error::CompilationError;
 use crate::parser::ast::{self, ClosureEnvironment};
 use crate::types::traits::{RequiredTrait, TraitConstraint, TraitConstraints};
 use crate::types::typed::Typed;
@@ -46,7 +46,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::mutual_recursion::{definition_is_mutually_recursive, try_generalize_definition};
 use super::traits::{Callsite, ConstraintSignature, TraitConstraintId};
-use super::{error, GeneralizedType, TypeInfoBody};
+use super::{GeneralizedType, TypeInfoBody};
 
 /// The current LetBindingLevel we are at.
 /// This increases by 1 whenever we enter the rhs of a `ast::Definition` and decreases
@@ -60,7 +60,7 @@ pub type TypeBindings = HashMap<TypeVariableId, Type>;
 
 /// The result of `try_unify`: either a set of type bindings to perform,
 /// or an error message of which types failed to unify.
-pub type UnificationResult<'c> = Result<UnificationBindings, ErrorMessage<'c>>;
+pub type UnificationResult<'c> = Result<UnificationBindings, ()>;
 
 type LevelBindings = Vec<(TypeVariableId, LetBindingLevel)>;
 
@@ -863,11 +863,10 @@ fn try_unify_type_variable_with_bindings<'c>(
 
 pub fn try_unify_with_bindings<'b>(
     t1: &Type, t2: &Type, bindings: &mut UnificationBindings, location: Location<'b>, cache: &mut ModuleCache<'b>,
-    error_message: &str,
-) -> Result<(), ErrorMessage<'b>> {
+) -> Result<(), ()> {
     match try_unify_with_bindings_inner(t1, t2, bindings, location, cache) {
         Ok(()) => Ok(()),
-        Err(()) => Err(error::from_template(error_message, location, t1, t2, cache)),
+        Err(()) => Err(()),
     }
 }
 
@@ -875,10 +874,10 @@ pub fn try_unify_with_bindings<'b>(
 /// set of type bindings, and returning all the newly-created bindings on success,
 /// or the unification error message on error.
 pub fn try_unify<'c>(
-    t1: &Type, t2: &Type, location: Location<'c>, cache: &mut ModuleCache<'c>, error_message: &str,
+    t1: &Type, t2: &Type, location: Location<'c>, cache: &mut ModuleCache<'c>,
 ) -> UnificationResult<'c> {
     let mut bindings = UnificationBindings::empty();
-    try_unify_with_bindings(t1, t2, &mut bindings, location, cache, error_message).map(|()| bindings)
+    try_unify_with_bindings(t1, t2, &mut bindings, location, cache).map(|()| bindings)
 }
 
 /// Try to unify all the given type, with the given bindings in scope.
@@ -891,18 +890,21 @@ pub fn try_unify_all_with_bindings<'c>(
         // This bad error message is the reason this function isn't used within
         // try_unify_with_bindings! We'd need access to the full type to give better
         // errors like the other function does.
-        return Err(make_error!(
+        cache.push_message(
             location,
-            "Type-length mismatch: {} versus {} when unifying [{}] and [{}]",
-            vec1.len(),
-            vec2.len(),
-            concat_type_strings(vec1, cache),
-            concat_type_strings(vec2, cache)
-        ));
+            CompilationError::todo(&format!(
+                "Type-length mismatch: {} versus {} when unifying [{}] and [{}]",
+                vec1.len(),
+                vec2.len(),
+                concat_type_strings(vec1, cache),
+                concat_type_strings(vec2, cache)
+            )),
+        );
+        return Err(());
     }
 
     for (t1, t2) in vec1.iter().zip(vec2.iter()) {
-        try_unify_with_bindings(t1, t2, &mut bindings, location, cache, error_message)?;
+        try_unify_with_bindings(t1, t2, &mut bindings, location, cache)?;
     }
     Ok(bindings)
 }
@@ -916,16 +918,9 @@ fn concat_type_strings<'c>(types: &[Type], cache: &ModuleCache<'c>) -> String {
 /// Unifies the two given types, remembering the unification results in the cache.
 /// If this operation fails, a user-facing error message is emitted.
 pub fn unify<'c>(t1: &Type, t2: &Type, location: Location<'c>, cache: &mut ModuleCache<'c>, error_message: &str) {
-    perform_bindings_or_print_error(try_unify(t1, t2, location, cache, error_message), cache);
-}
-
-/// Helper for committing to the results of try_unify.
-/// Places all the typevar bindings in the cache to be remembered,
-/// or otherwise prints out the given error message.
-pub fn perform_bindings_or_print_error<'c>(unification_result: UnificationResult<'c>, cache: &mut ModuleCache<'c>) {
-    match unification_result {
+    match try_unify(t1, t2, location, cache) {
         Ok(bindings) => bindings.perform(cache),
-        Err(message) => eprintln!("{}", message),
+        Err(_) => cache.push_message(location, CompilationError::mismatched_parameters(t2, t1)),
     }
 }
 
@@ -1476,7 +1471,7 @@ impl<'a> Inferable<'a> for ast::Literal<'a> {
                     Type::polymorphic_int(next_type_variable_id(cache))
                 };
                 TypeResult::of(t, cache)
-            }
+            },
             Float(_, kind) => {
                 let t = if let Some(kind) = kind {
                     Type::float(kind)
@@ -1484,7 +1479,7 @@ impl<'a> Inferable<'a> for ast::Literal<'a> {
                     Type::polymorphic_float(next_type_variable_id(cache))
                 };
                 TypeResult::of(t, cache)
-            }
+            },
             String(_) => TypeResult::of(Type::UserDefined(STRING_TYPE), cache),
             Char(_) => TypeResult::of(Type::Primitive(PrimitiveType::CharType), cache),
             Bool(_) => TypeResult::of(Type::Primitive(PrimitiveType::BooleanType), cache),
@@ -1737,7 +1732,7 @@ impl<'a> Inferable<'a> for ast::If<'a> {
 
 impl<'a> Inferable<'a> for ast::Match<'a> {
     fn infer_impl(&mut self, cache: &mut ModuleCache<'a>) -> TypeResult {
-        let error_count = get_error_count();
+        let previous_error_count = cache.error_count();
 
         let mut result = infer(self.expression.as_mut(), cache);
         let mut return_type = next_type_variable(cache);
@@ -1772,7 +1767,7 @@ impl<'a> Inferable<'a> for ast::Match<'a> {
 
         // Compiling the decision tree for this pattern requires each pattern is well-typed.
         // So skip this step if there was an error in inferring types for this match expression.
-        if get_error_count() == error_count {
+        if cache.error_count() == previous_error_count {
             let mut tree = pattern::compile(self, cache);
             // TODO: Infer new variables created by a decision tree within pattern::compile.
             //       It is done separately currently only for convenience/ease of implementation.
@@ -1976,19 +1971,19 @@ fn issue_assignment_error<'c>(
     let var = next_type_variable(cache);
     let mutref = Type::TypeApplication(Box::new(Type::Ref(lifetime)), vec![var]);
 
-    let msg = "Expression of type $1 must be a `ref a` type to be assigned to";
-    if let Err(msg) = try_unify(lhs, &mutref, lhs_loc, cache, msg) {
-        eprintln!("{}", msg);
+    let error = if let Err(msg) = try_unify(lhs, &mutref, lhs_loc, cache) {
+        CompilationError::ref_required_for_assignment(lhs)
     } else {
         let inner_type = match follow_bindings_in_cache(lhs, cache) {
             TypeApplication(_, mut args) => args.remove(0),
             _ => unreachable!(),
         };
 
-        let msg = "Cannot assign expression of type $2 to a ref of type $1";
-        let msg = try_unify(&inner_type, rhs, location, cache, msg).unwrap_err();
-        eprintln!("{}", msg);
-    }
+        try_unify(&inner_type, rhs, location, cache).unwrap_err();
+        CompilationError::cannot_assign_to_ref(inner_type, lhs)
+    };
+
+    cache.push_message(location, error);
 }
 
 impl<'a> Inferable<'a> for ast::EffectDefinition<'a> {

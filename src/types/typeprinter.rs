@@ -4,6 +4,7 @@
 //! types/traits are displayed via `type.display(cache)` rather than directly having
 //! a Display impl.
 use crate::cache::{ModuleCache, TraitInfoId};
+use crate::error::Styling;
 use crate::types::traits::{ConstraintSignature, ConstraintSignaturePrinter, RequiredTrait, TraitConstraintId};
 use crate::types::typechecker::find_all_typevars;
 use crate::types::{FunctionType, PrimitiveType, Type, TypeBinding, TypeInfoId, TypeVariableId};
@@ -12,7 +13,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Display, Formatter};
 
-use colored::*;
+use owo_colors::*;
 
 use super::effects::EffectSet;
 use super::GeneralizedType;
@@ -62,7 +63,7 @@ fn fill_typevar_map(map: &mut HashMap<TypeVariableId, String>, typevars: Vec<Typ
 /// naming to restart at `a` which may otherwise give them different names.
 pub fn show_type_and_traits<'b>(
     typ: &GeneralizedType, traits: &[RequiredTrait], trait_info: &Option<(TraitInfoId, Vec<Type>)>,
-    cache: &ModuleCache<'b>,
+    cache: &ModuleCache<'b>, styling: &Styling,
 ) -> (String, Vec<String>) {
     let mut map = HashMap::new();
     let mut current = 'a';
@@ -83,6 +84,7 @@ pub fn show_type_and_traits<'b>(
                 cache,
                 debug,
                 typevar_names: map.clone(),
+                styling,
             }
             .to_string()
         })
@@ -98,7 +100,7 @@ pub fn show_type_and_traits<'b>(
             args: args.clone(),
             id: TraitConstraintId(0), // Dummy value
         };
-        let p = ConstraintSignaturePrinter { signature, cache, debug, typevar_names: map.clone() };
+        let p = ConstraintSignaturePrinter { signature, cache, debug, typevar_names: map.clone(), styling };
         traits.push(p.to_string());
     }
 
@@ -168,19 +170,19 @@ impl<'a, 'b> TypePrinter<'a, 'b> {
 
     fn fmt_primitive(&self, primitive: &PrimitiveType, f: &mut Formatter) -> std::fmt::Result {
         match primitive {
-            PrimitiveType::IntegerTag(kind) => write!(f, "{}", kind.to_string().blue()),
-            PrimitiveType::FloatTag(kind) => write!(f, "{}", kind.to_string().blue()),
-            PrimitiveType::IntegerType => write!(f, "{}", "Int".blue()),
-            PrimitiveType::FloatType => write!(f, "{}", "Float".blue()),
-            PrimitiveType::CharType => write!(f, "{}", "Char".blue()),
-            PrimitiveType::BooleanType => write!(f, "{}", "Bool".blue()),
-            PrimitiveType::UnitType => write!(f, "{}", "Unit".blue()),
-            PrimitiveType::Ptr => write!(f, "{}", "Ptr".blue()),
+            PrimitiveType::IntegerTag(kind) => write!(f, "{}", kind),
+            PrimitiveType::FloatTag(kind) => write!(f, "{}", kind),
+            PrimitiveType::IntegerType => write!(f, "{}", "Int"),
+            PrimitiveType::FloatType => write!(f, "{}", "Float"),
+            PrimitiveType::CharType => write!(f, "{}", "Char"),
+            PrimitiveType::BooleanType => write!(f, "{}", "Bool"),
+            PrimitiveType::UnitType => write!(f, "{}", "Unit"),
+            PrimitiveType::Ptr => write!(f, "{}", "Ptr"),
         }
     }
 
     fn fmt_function(&self, function: &FunctionType, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "{}", "(".blue())?;
+        write!(f, "{}", "(")?;
         for (i, param) in function.parameters.iter().enumerate() {
             self.fmt_type(param, f)?;
             write!(f, " ")?;
@@ -213,14 +215,14 @@ impl<'a, 'b> TypePrinter<'a, 'b> {
             TypeBinding::Bound(typ) => self.fmt_type(typ, f),
             TypeBinding::Unbound(..) => {
                 let default = "?".to_string();
-                let name = self.typevar_names.get(&id).unwrap_or(&default).blue();
+                let name = self.typevar_names.get(&id).unwrap_or(&default);
                 write!(f, "{}", name)
             },
         }
     }
 
     fn fmt_user_defined_type(&self, id: TypeInfoId, f: &mut Formatter) -> std::fmt::Result {
-        let name = self.cache.type_infos[id.0].name.blue();
+        let name = self.cache.type_infos[id.0].name.clone();
         write!(f, "{}", name)
     }
 
@@ -230,7 +232,7 @@ impl<'a, 'b> TypePrinter<'a, 'b> {
         } else if constructor.is_polymorphic_float_type() {
             self.fmt_polymorphic_numeral(args, f, "Float")
         } else {
-            write!(f, "{}", "(".blue())?;
+            write!(f, "{}", "(")?;
 
             if constructor.is_pair_type() {
                 self.fmt_pair(args, f)?;
@@ -242,7 +244,7 @@ impl<'a, 'b> TypePrinter<'a, 'b> {
                 }
             }
 
-            write!(f, "{}", ")".blue())
+            write!(f, "{}", ")")
         }
     }
 
@@ -251,7 +253,7 @@ impl<'a, 'b> TypePrinter<'a, 'b> {
 
         self.fmt_type(&args[0], f)?;
 
-        write!(f, "{}", ", ".blue())?;
+        write!(f, "{}", ", ")?;
 
         match &args[1] {
             Type::TypeApplication(constructor, args) if constructor.is_pair_type() => self.fmt_pair(args, f),
@@ -264,11 +266,11 @@ impl<'a, 'b> TypePrinter<'a, 'b> {
 
         match self.cache.follow_typebindings_shallow(&args[0]) {
             Type::TypeVariable(_) => {
-                write!(f, "{}{} ", "(".blue(), kind.blue())?;
+                write!(f, "{}{} ", "(", kind)?;
                 self.fmt_type(&args[0], f)?;
-                write!(f, "{}", ")".blue())
+                write!(f, "{}", ")")
             },
-            other => self.fmt_type(other, f)
+            other => self.fmt_type(other, f),
         }
     }
 
@@ -331,25 +333,25 @@ impl<'a, 'b> TypePrinter<'a, 'b> {
         }
 
         if !effects.effects.is_empty() {
-            write!(f, "{}", "(".blue())?;
+            write!(f, "{}", "(")?;
         }
 
         for (effect_id, effect_args) in &effects.effects {
             let name = &self.cache.effect_infos[effect_id.0].name;
-            write!(f, "{}", name.blue())?;
+            write!(f, "{}", name)?;
 
             for arg in effect_args {
                 write!(f, " ")?;
                 self.fmt_type(arg, f)?;
             }
 
-            write!(f, "{}", ", ".blue())?;
+            write!(f, "{}", ", ")?;
         }
 
         self.fmt_type_variable(effects.replacement, f)?;
 
         if !effects.effects.is_empty() {
-            write!(f, "{}", ")".blue())?;
+            write!(f, "{}", ")")?;
         }
 
         Ok(())

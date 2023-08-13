@@ -16,8 +16,9 @@
 //! the relevant phase. An example is the `llvm::Generator` in the llvm codegen phase.
 use crate::cache::unsafecache::UnsafeCache;
 use crate::error::location::{Locatable, Location};
+use crate::error::{CompilationMessage, MessageType};
 use crate::nameresolution::NameResolver;
-use crate::parser::ast::{Ast, Definition, EffectDefinition, TraitDefinition, TraitImpl, Extern};
+use crate::parser::ast::{Ast, Definition, EffectDefinition, Extern, TraitDefinition, TraitImpl};
 use crate::types::traits::{ConstraintSignature, RequiredImpl, RequiredTrait, TraitConstraintId};
 use crate::types::{GeneralizedType, Kind, LetBindingLevel, TypeBinding};
 use crate::types::{Type, TypeInfo, TypeInfoBody, TypeInfoId, TypeVariableId};
@@ -110,6 +111,9 @@ pub struct ModuleCache<'a> {
     /// to all functions in that set. Once the key'd function finishes compiling we can
     /// generalize all the functions in the set and add trait constraints at once.
     pub mutual_recursion_sets: Vec<MutualRecursionSet>,
+
+    /// A list of all the compilation errors having occured so far.
+    pub compilation_messages: Vec<CompilationMessage>,
 }
 
 #[derive(Debug)]
@@ -376,6 +380,7 @@ impl<'a> ModuleCache<'a> {
             call_stack: vec![],
             mutual_recursion_sets: vec![],
             effect_infos: vec![],
+            compilation_messages: vec![],
         }
     }
 
@@ -414,6 +419,18 @@ impl<'a> ModuleCache<'a> {
         let type_info = TypeInfo { name, args, location, uses: 0, body: TypeInfoBody::Unknown };
         self.type_infos.push(type_info);
         TypeInfoId(id)
+    }
+
+    pub fn push_message(&mut self, location: Location, message: impl Into<MessageType>) {
+        self.compilation_messages.push(CompilationMessage::new(location, message.into()))
+    }
+
+    pub fn error_count(&self) -> usize {
+        self.compilation_messages.iter().filter(|msg| msg.is_error()).count()
+    }
+
+    pub fn has_errored(&self) -> bool {
+        self.error_count() != 0
     }
 
     pub fn get_name_resolver_by_path(&self, path: &Path) -> Option<&mut NameResolver> {
@@ -605,11 +622,9 @@ impl<'a> ModuleCache<'a> {
 
     pub fn follow_typebindings_shallow<'b>(&'b self, typ: &'b Type) -> &'b Type {
         match typ {
-            Type::TypeVariable(id) => {
-                match &self.type_bindings[id.0] {
-                    TypeBinding::Bound(typ) => self.follow_typebindings_shallow(typ),
-                    TypeBinding::Unbound(_, _) => typ,
-                }
+            Type::TypeVariable(id) => match &self.type_bindings[id.0] {
+                TypeBinding::Bound(typ) => self.follow_typebindings_shallow(typ),
+                TypeBinding::Unbound(_, _) => typ,
             },
             other => other,
         }

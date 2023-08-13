@@ -2,7 +2,6 @@
 //! when printing this error to stderr.
 use super::combinators::Input;
 use crate::error::location::{Locatable, Location};
-use crate::error::ErrorMessage;
 use crate::lexer::token::{LexerError, Token};
 use crate::util::join_with;
 use std::fmt::Display;

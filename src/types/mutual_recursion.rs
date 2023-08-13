@@ -3,7 +3,7 @@ use crate::cache::MutualRecursionId;
 use crate::types::GeneralizedType;
 use crate::{
     cache::{DefinitionInfoId, DefinitionKind, ModuleCache, VariableId},
-    error::location::Locatable,
+    error::{location::Locatable, CompilationError},
     parser::ast,
     types::{
         traitchecker,
@@ -160,7 +160,7 @@ fn is_mutually_recursive(pattern: &ast::Ast, cache: &ModuleCache) -> MutualRecur
             call.args.iter().fold(MutualRecursionResult::No, |a, b| a.combine(is_mutually_recursive(b, cache)))
         },
         _ => {
-            error!(pattern.locate(), "Invalid syntax in irrefutable pattern");
+            cache.push_message(pattern.locate(), CompilationError::todo("Invalid syntax in irrefutable pattern"));
             MutualRecursionResult::No
         },
     }

@@ -20,14 +20,15 @@
 use std::sync::atomic::AtomicBool;
 
 use crate::cache::{ImplInfoId, ModuleCache};
-use crate::lexer::token::{IntegerKind, FloatKind};
+use crate::error::{CompilationError, CompilationNote};
+use crate::lexer::token::{FloatKind, IntegerKind};
 use crate::types::traits::{RequiredTrait, TraitConstraint, TraitConstraints};
 use crate::types::typechecker::{self, TypeBindings};
 use crate::types::TypeVariableId;
 use crate::util::{fmap, trustme};
 
-use super::{Type, PrimitiveType};
 use super::typechecker::UnificationBindings;
+use super::{PrimitiveType, Type};
 
 /// Arbitrary impl requirements can result in arbitrary recursion
 /// when attempting to solve impl constraints. To prevent infinitely
@@ -49,8 +50,7 @@ const DEFAULT_FLOAT_TYPE: Type = Type::Primitive(PrimitiveType::FloatTag(FloatKi
 pub fn resolve_traits<'a>(
     constraints: TraitConstraints, typevars_in_fn_signature: &[TypeVariableId], cache: &mut ModuleCache<'a>,
 ) -> Vec<RequiredTrait> {
-    let (propagated_traits, other_constraints) =
-        sort_traits(constraints, typevars_in_fn_signature, cache);
+    let (propagated_traits, other_constraints) = sort_traits(constraints, typevars_in_fn_signature, cache);
 
     let mut failing_constraints = try_solve_constraints(other_constraints.iter(), cache, false);
 
@@ -79,7 +79,9 @@ pub fn resolve_traits<'a>(
 }
 
 /// Attempt to solve each trait, returning each trait that failed to be solved
-fn try_solve_constraints<'a>(constraints: impl IntoIterator<Item = &'a TraitConstraint>, cache: &mut ModuleCache, default_to_i32: bool) -> Vec<&'a TraitConstraint> {
+fn try_solve_constraints<'a>(
+    constraints: impl IntoIterator<Item = &'a TraitConstraint>, cache: &mut ModuleCache, default_to_i32: bool,
+) -> Vec<&'a TraitConstraint> {
     constraints
         .into_iter()
         .filter_map(|constraint| {
@@ -106,18 +108,20 @@ fn default_polymorphic_literals(args: &[super::Type], cache: &ModuleCache) -> Un
 
 fn default_literals(arg: &Type, bindings: &mut UnificationBindings, cache: &ModuleCache) {
     // Check for every type application of the `Int` or `Float` type and an unbound type variable.
-    arg.traverse(cache, |typ| if let Type::TypeApplication(constructor, args) = typ {
-        let constructor = cache.follow_typebindings_shallow(constructor);
-        if let Type::Primitive(PrimitiveType::IntegerType) = &constructor {
-            let arg = cache.follow_typebindings_shallow(&args[0]);
-            if let Type::TypeVariable(id) = arg {
-                // bind id to i32
-                bindings.bindings.insert(*id, DEFAULT_INT_TYPE);
-            }
-        } else if let Type::Primitive(PrimitiveType::FloatType) = &constructor {
-            let arg = cache.follow_typebindings_shallow(&args[0]);
-            if let Type::TypeVariable(id) = arg {
-                bindings.bindings.insert(*id, DEFAULT_FLOAT_TYPE);
+    arg.traverse(cache, |typ| {
+        if let Type::TypeApplication(constructor, args) = typ {
+            let constructor = cache.follow_typebindings_shallow(constructor);
+            if let Type::Primitive(PrimitiveType::IntegerType) = &constructor {
+                let arg = cache.follow_typebindings_shallow(&args[0]);
+                if let Type::TypeVariable(id) = arg {
+                    // bind id to i32
+                    bindings.bindings.insert(*id, DEFAULT_INT_TYPE);
+                }
+            } else if let Type::Primitive(PrimitiveType::FloatType) = &constructor {
+                let arg = cache.follow_typebindings_shallow(&args[0]);
+                if let Type::TypeVariable(id) = arg {
+                    bindings.bindings.insert(*id, DEFAULT_FLOAT_TYPE);
+                }
             }
         }
     })
@@ -208,11 +212,13 @@ fn solve_normal_constraint<'c>(constraint: &TraitConstraint, cache: &mut ModuleC
             bind_impl(impl_id, constraint, cache);
         }
     } else if matching_impls.len() > 1 {
-        error!(
+        cache.push_message(
             constraint.locate(cache),
-            "{} matching impls found for {}",
-            matching_impls.len(),
-            constraint.display(cache)
+            CompilationError::todo(&format!(
+                "{} matching impls found for {}",
+                matching_impls.len(),
+                constraint.display(cache)
+            )),
         );
 
         let max_shown_impls = 3;
@@ -220,13 +226,19 @@ fn solve_normal_constraint<'c>(constraint: &TraitConstraint, cache: &mut ModuleC
             let impl_id = impls[0].0;
             if i == 2 && matching_impls.len() > max_shown_impls {
                 let rest = matching_impls.len() - max_shown_impls;
-                note!(cache[impl_id].location, "Candidate {} ({} more hidden)", i + 1, rest);
+                cache.push_message(
+                    cache[impl_id].location,
+                    CompilationNote::todo(&format!("Candidate {} ({} more hidden)", i + 1, rest)),
+                );
             } else {
-                note!(cache[impl_id].location, "Candidate {}", i + 1);
+                cache.push_message(cache[impl_id].location, CompilationNote::todo(&format!("Candidate {}", i + 1)));
             }
         }
     } else {
-        error!(constraint.locate(cache), "No impl found for {}", constraint.display(cache))
+        cache.push_message(
+            constraint.locate(cache),
+            CompilationError::todo(&format!("No impl found for {}", constraint.display(cache))),
+        );
     }
 }
 

@@ -2,7 +2,7 @@
 //! Locations throughout the compiler. Most notably, these locations
 //! are passed around throughout the parser and are stored in each
 //! Ast node, along with several structs in the ModuleCache.
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A given Position in a file. These are usually used as
 /// start positions for a Location struct.
@@ -68,6 +68,14 @@ pub struct Location<'c> {
     pub end: EndPosition,
 }
 
+/// A [`Location`], but with an owned path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedLocation {
+    pub filename: PathBuf,
+    pub start: Position,
+    pub end: EndPosition,
+}
+
 impl<'c> Ord for Location<'c> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         (self.start, self.end).cmp(&(other.start, other.end))
@@ -107,6 +115,16 @@ impl<'c> Location<'c> {
         let end = if self.end.index < other.end.index { other.end } else { self.end };
 
         Location { filename: self.filename, start, end }
+    }
+
+    pub fn as_owned(&self) -> OwnedLocation {
+        OwnedLocation { filename: self.filename.to_owned(), start: self.start, end: self.end }
+    }
+}
+
+impl OwnedLocation {
+    pub fn length(&self) -> usize {
+        self.end.index - self.start.index
     }
 }
 
